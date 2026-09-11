@@ -159,6 +159,16 @@ fix(secrets): load JWT signing key from environment, fail fast if unset
 fix(secrets): remove hardcoded default admin password, generate at first boot
 ```
 
+> 🔗 **Efecto colateral a no olvidar:** el job `07 · DAST` del workflow
+> obtiene un token JWT para que ZAP pueda probar endpoints protegidos, y lo
+> hace haciendo login con el usuario/contraseña sembrados
+> (`admin` / `Admin123!`, ver `.github/workflows/devsecops-pipeline.yml`,
+> paso "Obtain an auth token so ZAP can reach protected endpoints too").
+> En cuanto apliques este fix, esa contraseña deja de ser fija y ese paso
+> del workflow se romperá. Tendrás que crear un secret de repositorio
+> (p. ej. `FLEET_ADMIN_PASSWORD`) y pasarlo al job como variable de entorno
+> en el `docker run` que arranca el contenedor.
+
 > ⚠️ Si esta vulnerabilidad se hubiera descubierto en un repositorio ya
 > subido a GitHub, cambiar el código **no es suficiente**: el secreto sigue
 > en el historial de git. Habría que rotarlo (invalidar tokens firmados con

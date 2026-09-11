@@ -387,14 +387,25 @@ jobs:
           retention-days: 90
 
   # ---------------------------------------------------------------------------
-  # 7) DAST — OWASP ZAP baseline scan
-  # Runs the actual container and points ZAP's baseline (passive) scan at it,
-  # exercising the running application like a black-box attacker would —
+  # 7) DAST — OWASP ZAP, OpenAPI-driven active scan
+  # This app is a pure JSON REST API with no HTML to follow links from, so
+  # ZAP's classic "baseline" scan (a spider that crawls <a href> links) sees
+  # nothing but a 404 at "/" and never touches a single real endpoint — this
+  # was verified against an actual run before landing on the fix below.
+  # `action-api-scan` instead imports FastAPI's auto-generated OpenAPI spec
+  # (/openapi.json) so ZAP knows every real route and actively attacks each
+  # one, exercising the running application like a black-box attacker would —
   # catching issues SAST cannot see (missing security headers, cookie flags,
   # server fingerprinting, etc.). .zap/rules.tsv tunes noisy/expected alerts.
+  #
+  # `allow_issue_writing: false` is deliberate: the action defaults to
+  # opening a GitHub Issue with the results, which needs `issues: write`
+  # (not granted here on purpose — findings belong in the artifact/Security
+  # tab, not as auto-filed Issues) and previously caused the whole action to
+  # error out via a 403 before it reached its own artifact-upload step.
   # ---------------------------------------------------------------------------
   dast-zap:
-    name: "07 · DAST — OWASP ZAP baseline"
+    name: "07 · DAST — OWASP ZAP (OpenAPI scan)"
     runs-on: ubuntu-latest
     needs: build-image
     steps:
@@ -426,18 +437,39 @@ jobs:
           docker logs fleet-compliance-api
           exit 1
 
+      - name: Obtain an auth token so ZAP can reach protected endpoints too
+        id: auth
+        run: |
+          # Uses the seeded demo credential (see docs/VULNERABILITIES.md,
+          # Vulnerability 2 — this is the intentionally-hardcoded default
+          # admin password). Once that vulnerability is fixed and the
+          # password stops being a fixed, known value, this step must
+          # instead read it from a GitHub Actions secret.
+          TOKEN=$(curl -s -X POST http://localhost:8000/auth/token \
+            -d "username=admin&password=Admin123!" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
+          echo "::add-mask::${TOKEN}"
+          echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+
       - name: Create reports directory
         run: mkdir -p reports
 
-      - name: Run OWASP ZAP baseline scan
+      - name: Run OWASP ZAP API scan (OpenAPI-driven)
         id: zap
-        uses: zaproxy/action-baseline@v0.15.0
+        uses: zaproxy/action-api-scan@v0.10.0
         continue-on-error: true
+        env:
+          ZAP_AUTH_HEADER: Authorization
+          ZAP_AUTH_HEADER_VALUE: "Bearer ${{ steps.auth.outputs.token }}"
+          ZAP_AUTH_HEADER_SITE: "http://localhost:8000"
         with:
-          target: "http://localhost:8000"
+          target: "http://localhost:8000/openapi.json"
+          format: openapi
           rules_file_name: ".zap/rules.tsv"
           cmd_options: "-a"
           fail_action: true
+          allow_issue_writing: false
           artifact_name: "report-zap"
 
       - name: Show application logs (debugging aid)

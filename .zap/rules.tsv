@@ -1,5 +1,7 @@
-## OWASP ZAP baseline scan rules file.
-## Used by: .github/workflows/devsecops-pipeline.yml, job "07 · DAST — OWASP ZAP baseline"
+## OWASP ZAP scan rules file (alert filter), used by the OpenAPI-driven
+## active scan (zaproxy/action-api-scan), not the classic HTML-spider
+## baseline scan — this app is a JSON API, see the comment in the workflow.
+## Used by: .github/workflows/devsecops-pipeline.yml, job "07 · DAST — OWASP ZAP (OpenAPI scan)"
 ## Format: <rule id><TAB><threshold: IGNORE|INFO|WARN|FAIL><TAB>(<rule name — comment only>)
 ##
 ## We deliberately do NOT ignore missing-security-header findings or cookie

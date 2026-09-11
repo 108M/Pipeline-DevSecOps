@@ -37,7 +37,7 @@ contra los requisitos de la **Cyber Resilience Act (CRA)** de la UE
 1. **Una API REST realista** ([`app/`](app/)) con autenticación JWT,
    persistencia en SQLite y 3 vulnerabilidades sencillas, deliberadas y
    documentadas.
-2. **Un pipeline de GitHub Actions con 8 jobs** ([`.github/workflows/devsecops-pipeline.yml`](.github/workflows/devsecops-pipeline.yml))
+2. **Un pipeline de GitHub Actions con 9 jobs** ([`.github/workflows/devsecops-pipeline.yml`](.github/workflows/devsecops-pipeline.yml))
    que cubre SAST, detección de secretos, SCA, escaneo de imagen de
    contenedor, DAST y generación de SBOM — cada uno comentado explicando
    *qué hace y por qué está ahí*.
@@ -89,7 +89,7 @@ de pruebas para el DAST.
 
 ## El pipeline
 
-8 jobs, cada uno con permisos mínimos (`permissions:` explícito por job),
+9 jobs, cada uno con permisos mínimos (`permissions:` explícito por job),
 que se ejecutan en `push`/`pull_request` a `main`, bajo demanda
 (`workflow_dispatch`) y semanalmente (`schedule`) para detectar CVEs nuevas
 sin necesidad de un cambio de código:
@@ -103,7 +103,7 @@ sin necesidad de un cambio de código:
 | `04 · Build` | Docker | Construye la imagen una única vez y la comparte con los jobs siguientes como artifact |
 | `05 · Container scan` | Trivy (image) | Analiza la imagen final (SO base + dependencias instaladas) |
 | `06 · SBOM` | [Syft](https://github.com/anchore/syft) | Genera un SBOM CycloneDX de la imagen que realmente se desplegaría |
-| `07 · DAST` | [OWASP ZAP](https://www.zaproxy.org/) (baseline) | Levanta el contenedor y lanza un escaneo pasivo contra la API real en ejecución |
+| `07 · DAST` | [OWASP ZAP](https://www.zaproxy.org/) (escaneo activo vía OpenAPI) | Levanta el contenedor, importa el spec OpenAPI que expone FastAPI y ataca activamente cada endpoint real (autenticado incluido) |
 | `08 · Publish` | — | Descarga todos los informes, genera un resumen en el *Job Summary* y los publica como un único artifact consolidado |
 
 Cada job de escaneo sube su resultado como **artifact descargable** y, cuando
@@ -135,7 +135,7 @@ flowchart TD
     subgraph Análisis_de_artefacto["Análisis del artefacto construido"]
         imgscan["05 · Container scan<br/>Trivy (image)"]
         sbom["06 · SBOM<br/>Syft / CycloneDX"]
-        dast["07 · DAST<br/>OWASP ZAP baseline"]
+        dast["07 · DAST<br/>OWASP ZAP (OpenAPI scan)"]
     end
 
     tests --> publish
@@ -243,10 +243,10 @@ que queda para dejar el repositorio 100% completo de cara a un revisor.
 │       ├── test_api.py           # Tests funcionales
 │       └── test_vulnerabilities.py  # Tests de regresión de seguridad
 ├── .github/workflows/
-│   └── devsecops-pipeline.yml    # Los 8 jobs del pipeline
+│   └── devsecops-pipeline.yml    # Los 9 jobs del pipeline
 ├── .semgrep/custom-rules.yml     # Regla SAST propia (SQLi)
 ├── .gitleaks.toml                # Config de Gitleaks (extiende reglas por defecto)
-├── .zap/rules.tsv                # Tuning del baseline scan de ZAP
+├── .zap/rules.tsv                # Tuning del escaneo activo de ZAP (OpenAPI)
 ├── docs/
 │   ├── VULNERABILITIES.md        # Las 3 vulnerabilidades + fixes exactos
 │   └── screenshots/               # Capturas del pipeline en ejecución
