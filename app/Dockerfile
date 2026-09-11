@@ -32,6 +32,15 @@ RUN pip install --no-cache-dir --user -r requirements.txt
 # ---- runtime stage ------------------------------------------------------
 FROM python:3.12-slim AS runtime
 
+# `FROM python:3.12-slim` here starts a SECOND, independent copy of the base
+# image with its own bundled pip — upgrading pip in the builder stage above
+# does not carry over; only the packages explicitly COPY --from=builder do.
+# (Learned this the hard way: the image scan kept flagging pip CVEs even
+# after "fixing" it, because it was still checking the runtime stage's own
+# untouched pip.) Upgrade it here too, before switching to the non-root user
+# below (writing to system site-packages needs root).
+RUN pip install --no-cache-dir --upgrade pip
+
 # Create an unprivileged user to run the application as (never run as root).
 RUN addgroup --system app && adduser --system --ingroup app --home /home/app app
 
