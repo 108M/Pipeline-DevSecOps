@@ -270,7 +270,21 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build Docker image
-        run: docker build -f app/Dockerfile -t "${IMAGE_NAME}:${IMAGE_TAG}" .
+        # --provenance=false --sbom=false: modern BuildKit attaches its own
+        # build provenance/SBOM attestation to the image by default. Trivy
+        # then prefers that "third-party SBOM" over analyzing the real
+        # filesystem — and it was found to report stale package versions
+        # (verified: the actual `pip install` output for this exact build
+        # showed correct, current versions; Trivy's report on the same
+        # image did not, until this flag was added). Scanning the real
+        # filesystem is what we actually want for job 05.
+        run: |
+          docker build \
+            --provenance=false \
+            --sbom=false \
+            -f app/Dockerfile \
+            -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+            .
 
       - name: Save image to a tarball
         run: docker save "${IMAGE_NAME}:${IMAGE_TAG}" -o image.tar
