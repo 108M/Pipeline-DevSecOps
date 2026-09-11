@@ -381,23 +381,48 @@ ejemplo perfecto de por qué el DAST es complementario al SAST: ningún
 análisis estático del código Python iba a decirte que faltan cabeceras
 HTTP en las respuestas reales.
 
-Fix sugerido (no incluido en el código base a propósito, para que sea el
-último ejercicio del proyecto): añadir un middleware que fije cabeceras de
-seguridad en cada respuesta, por ejemplo con
-[`secure`](https://github.com/TypeError/secure) o manualmente:
+**Fix — aplicado.** Este fue deliberadamente el último ejercicio del
+proyecto, dejado fuera del código base hasta cerrar el resto del pipeline.
+Un run real de `07 · DAST — OWASP ZAP (OpenAPI scan)` contra la API viva en
+el runner confirmó, con hallazgos reales (no simulados), que faltaban
+exactamente `X-Content-Type-Options` y `Cross-Origin-Resource-Policy` — el
+resto de cabeceras de abajo se añadieron por buena práctica adicional para
+una API JSON pura sin frontend renderizado en navegador.
+
+El fix es un middleware en `app/main.py` (justo después de instanciar
+`FastAPI(...)`) que fija cabeceras de seguridad en cada respuesta:
 
 ```python
 @app.middleware("http")
-async def add_security_headers(request, call_next):
+async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    # No browser-rendered frontend ships from this origin, so a maximally
+    # restrictive CSP is correct here rather than a permissive default.
     response.headers["Content-Security-Policy"] = "default-src 'none'"
-    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    response.headers["Strict-Transport-Security"] = (
+        "max-age=63072000; includeSubDomains"
+    )
     return response
 ```
 
-Commit sugerido:
+Verificado localmente antes de subirlo: suite de tests (11/11) sigue en
+verde, y un servidor uvicorn real contra `GET /health` devuelve las 5
+cabeceras en la respuesta:
+
+```
+$ curl -sI http://127.0.0.1:8123/health
+HTTP/1.1 200 OK
+x-content-type-options: nosniff
+x-frame-options: DENY
+cross-origin-resource-policy: same-origin
+content-security-policy: default-src 'none'
+strict-transport-security: max-age=63072000; includeSubDomains
+```
+
+Commit:
 
 ```
 fix(security): add hardening HTTP response headers (OWASP ZAP findings)

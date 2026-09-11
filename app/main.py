@@ -11,19 +11,17 @@ CRA_MAPPING.md). Devices check in via a `/heartbeat` endpoint the way a real
 OTA (over-the-air) update agent would.
 
 See docs/VULNERABILITIES.md for the 3 intentional, documented vulnerabilities
-this app ships with.
-
-NOTE: this app also does NOT set any hardening HTTP response headers
-(Content-Security-Policy, X-Content-Type-Options, Strict-Transport-Security,
-...). That's intentional too — it gives the OWASP ZAP DAST job real,
-non-fabricated findings to report, the same way a first pass on almost any
-new service would. Fixing that is part of the exercise in
-docs/VULNERABILITIES.md.
+this app ships with, and its final section for the hardening-headers
+middleware below — added after a real OWASP ZAP run against this exact app
+flagged `X-Content-Type-Options` and `Cross-Origin-Resource-Policy` as
+missing, which is why those two are non-negotiable here; the rest follow
+standard API-hardening practice for a JSON-only service with no
+browser-rendered frontend.
 """
 
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from . import auth, database, models
@@ -45,6 +43,21 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    # No browser-rendered frontend ships from this origin, so a maximally
+    # restrictive CSP is correct here rather than a permissive default.
+    response.headers["Content-Security-Policy"] = "default-src 'none'"
+    response.headers["Strict-Transport-Security"] = (
+        "max-age=63072000; includeSubDomains"
+    )
+    return response
 
 
 @app.get("/health", tags=["meta"])
