@@ -1,0 +1,24 @@
+# Local development / manual testing convenience file.
+# The CI pipeline does NOT use this file — each workflow job builds the
+# image directly with `docker build` so that it stays self-contained and
+# reproducible on a bare GitHub-hosted runner. This compose file is purely
+# for `docker compose up` on your own machine.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    image: fleet-compliance-api:local
+    ports:
+      - "8000:8000"
+    volumes:
+      - tasks-data:/home/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  tasks-data:

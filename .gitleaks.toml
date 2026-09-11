@@ -1,0 +1,25 @@
+# Gitleaks configuration for this repository.
+# Used by: .github/workflows/devsecops-pipeline.yml, job "02 · Secrets (Gitleaks)"
+#
+# We extend gitleaks' default, community-maintained rule set (AWS keys,
+# GitHub/GitLab tokens, Stripe keys, JWTs, generic high-entropy secrets, ...)
+# rather than reinventing it, and only add repo-specific allowlist entries
+# below to keep the signal-to-noise ratio high.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known-safe, non-secret values that would otherwise look like findings"
+regexes = [
+  # Placeholder values in .env.example are meant to be replaced, never real
+  # secrets — but keep this scoped to that one file (see paths below).
+  '''change-me[-a-zA-Z0-9]*''',
+]
+paths = [
+  '''\.env\.example$''',
+]
+
+# NOTE: app/config.py is intentionally NOT allowlisted. SECRET_KEY and
+# ADMIN_PASSWORD in that file are Vulnerability 2 (see
+# docs/VULNERABILITIES.md) and this pipeline is supposed to catch them.

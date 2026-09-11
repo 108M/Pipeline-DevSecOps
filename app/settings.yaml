@@ -1,0 +1,12 @@
+# Non-sensitive feature-flag style configuration, loaded at startup with
+# yaml.safe_load() (see app/feature_flags.py).
+#
+# NOTE: this file's *own* content is harmless. The reason `PyYAML` shows up
+# as a finding in the pipeline is that requirements.txt pins an old, known
+# vulnerable release of the library (CVE-2020-14343) — see
+# docs/VULNERABILITIES.md, "Vulnerability 1". Software Composition Analysis
+# (SCA) tools like Trivy flag the *library version* itself, independently of
+# whether your code happens to call it safely.
+allow_device_search: true
+max_devices_per_owner: 500
+maintenance_mode: false

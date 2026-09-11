@@ -1,0 +1,508 @@
+name: DevSecOps Pipeline (CRA-aligned)
+
+# -----------------------------------------------------------------------------
+# End-to-end DevSecOps pipeline for the Fleet Compliance API.
+#
+# Every stage below maps to one or more Cyber Resilience Act (EU) 2024/2847
+# requirements — see CRA_MAPPING.md for the full article-by-article rationale.
+# The short version:
+#   - SAST + secrets scanning  -> "secure by design" / vulnerability handling
+#   - SCA + container scanning -> known-vulnerability management, SBOM inputs
+#   - SBOM (CycloneDX)         -> Art. 13(23) & Annex I Part II(1) SBOM duty
+#   - DAST                     -> effective security testing before release
+#   - Published reports        -> vulnerability handling / disclosure process
+#
+# Design notes:
+#   - Every scanning job writes its report to disk FIRST, then uploads it as
+#     a build artifact and (where the tool supports it) as SARIF to GitHub's
+#     Security tab — in that order, using `if: always()` — so a finding that
+#     fails the job still leaves the evidence downloadable. The job only
+#     fails at the very last step, once the report is safely captured.
+#   - This repository intentionally ships 3 vulnerabilities on the very
+#     first commit (see docs/VULNERABILITIES.md). That means this pipeline
+#     is EXPECTED to go red the first time it runs — that's the point: it
+#     proves the gates actually gate. It turns green again after the fixes
+#     described in docs/VULNERABILITIES.md are applied in a follow-up commit.
+# -----------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+  schedule:
+    # Weekly re-scan so newly disclosed CVEs against pinned dependencies /
+    # the base image are caught even without a code change — this is what
+    # CRA Annex I Part II(2) ("address vulnerabilities without undue delay
+    # for the support period") looks like in an automated pipeline.
+    - cron: "0 3 * * 1"
+
+concurrency:
+  group: devsecops-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: fleet-compliance-api
+  IMAGE_TAG: ${{ github.sha }}
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 0) Unit tests — pytest
+  # Functional correctness gate, independent from the security jobs. Includes
+  # app/tests/test_vulnerabilities.py, which are security *regression* tests
+  # (they currently assert the vulnerable behavior — see docs/VULNERABILITIES.md
+  # for how they should be flipped once each fix lands). build-image only runs
+  # once this passes: there is no point scanning/shipping an image whose app
+  # is already broken.
+  # ---------------------------------------------------------------------------
+  unit-tests:
+    name: "00 · Unit tests (pytest)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: app/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r app/requirements-dev.txt
+
+      - name: Run tests
+        run: pytest -v
+
+  # ---------------------------------------------------------------------------
+  # 1) SAST — Semgrep
+  # Static analysis of the application source code. Configured with the OWASP
+  # Top 10 and Python security rulesets plus a repo-specific custom rule
+  # (.semgrep/custom-rules.yml) tuned for this codebase. This is the job that
+  # is expected to catch Vulnerability 3 (SQL Injection in database.py).
+  # ---------------------------------------------------------------------------
+  sast-semgrep:
+    name: "01 · SAST (Semgrep)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Create reports directory
+        run: mkdir -p reports
+
+      - name: Run Semgrep scan
+        id: semgrep
+        continue-on-error: true
+        run: |
+          semgrep scan \
+            --config p/owasp-top-ten \
+            --config p/python \
+            --config p/secrets \
+            --config .semgrep/custom-rules.yml \
+            --sarif --output reports/semgrep.sarif \
+            --error \
+            app
+
+      - name: Upload Semgrep SARIF to GitHub code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/semgrep.sarif
+          category: semgrep
+
+      - name: Upload Semgrep report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-semgrep
+          path: reports/semgrep.sarif
+          retention-days: 30
+
+      - name: Gate — fail job if Semgrep found blocking findings
+        if: steps.semgrep.outcome == 'failure'
+        run: |
+          echo "::error::Semgrep found blocking findings (e.g. SQL Injection). See docs/VULNERABILITIES.md (Vulnerability 3) for the fix."
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # 2) Secret detection — Gitleaks
+  # Scans the full git history (not just the working tree) for hardcoded
+  # credentials. Expected to catch Vulnerability 2 (hardcoded JWT secret /
+  # admin password in app/config.py).
+  # ---------------------------------------------------------------------------
+  secrets-gitleaks:
+    name: "02 · Secrets (Gitleaks)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create reports directory
+        run: mkdir -p reports
+
+      - name: Run Gitleaks (SARIF report)
+        id: gitleaks
+        continue-on-error: true
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
+            detect --source=/repo --redact --no-banner \
+            --config=/repo/.gitleaks.toml \
+            --report-format=sarif --report-path=/repo/reports/gitleaks.sarif
+
+      - name: Run Gitleaks (JSON report, secrets redacted)
+        if: always()
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
+            detect --source=/repo --redact --no-banner \
+            --config=/repo/.gitleaks.toml \
+            --report-format=json --report-path=/repo/reports/gitleaks.json \
+            --exit-code=0
+
+      - name: Upload Gitleaks SARIF to GitHub code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/gitleaks.sarif
+          category: gitleaks
+
+      - name: Upload Gitleaks report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-gitleaks
+          path: |
+            reports/gitleaks.sarif
+            reports/gitleaks.json
+          retention-days: 30
+
+      - name: Gate — fail job if Gitleaks found secrets
+        if: steps.gitleaks.outcome == 'failure'
+        run: |
+          echo "::error::Gitleaks found hardcoded secrets. See docs/VULNERABILITIES.md (Vulnerability 2) for the fix."
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # 3) SCA — Trivy (filesystem / dependency scan)
+  # Scans app/requirements.txt for known-vulnerable package versions.
+  # Expected to catch Vulnerability 1 (PyYAML 5.3.1, CVE-2020-14343).
+  # ---------------------------------------------------------------------------
+  sca-dependencies:
+    name: "03 · SCA — dependencies (Trivy)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create reports directory
+        run: mkdir -p reports
+
+      - name: Run Trivy filesystem scan
+        id: trivy-fs
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: fs
+          scan-ref: app/requirements.txt
+          format: sarif
+          output: reports/trivy-fs.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: "1"
+          ignore-unfixed: false
+
+      - name: Upload Trivy SARIF to GitHub code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/trivy-fs.sarif
+          category: trivy-dependencies
+
+      - name: Upload Trivy dependency report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-trivy-dependencies
+          path: reports/trivy-fs.sarif
+          retention-days: 30
+
+      - name: Gate — fail job if Trivy found vulnerable dependencies
+        if: steps.trivy-fs.outcome == 'failure'
+        run: |
+          echo "::error::Trivy found known-vulnerable dependencies (e.g. PyYAML). See docs/VULNERABILITIES.md (Vulnerability 1) for the fix."
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # 4) Build the container image once and share it with the jobs that need it
+  # (container scan, SBOM, DAST) via a build artifact, instead of rebuilding
+  # it three times. This mirrors how a real pipeline promotes a single,
+  # immutable build artifact through several verification gates.
+  # ---------------------------------------------------------------------------
+  build-image:
+    name: "04 · Build container image"
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -f app/Dockerfile -t "${IMAGE_NAME}:${IMAGE_TAG}" .
+
+      - name: Save image to a tarball
+        run: docker save "${IMAGE_NAME}:${IMAGE_TAG}" -o image.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: image.tar
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 5) Container image scan — Trivy
+  # Scans the built image's OS packages + installed Python dependencies for
+  # known vulnerabilities and basic misconfigurations. Overlaps intentionally
+  # with the SCA job above (that's normal: the fs scan runs fast on every PR
+  # before an image even exists, the image scan is the source of truth for
+  # what actually ships).
+  # ---------------------------------------------------------------------------
+  container-scan:
+    name: "05 · Container image scan (Trivy)"
+    runs-on: ubuntu-latest
+    needs: build-image
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load image
+        run: docker load -i image.tar
+
+      - name: Create reports directory
+        run: mkdir -p reports
+
+      - name: Run Trivy image scan
+        id: trivy-image
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: image
+          image-ref: "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          format: sarif
+          output: reports/trivy-image.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: "1"
+
+      - name: Upload Trivy image SARIF to GitHub code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/trivy-image.sarif
+          category: trivy-image
+
+      - name: Upload Trivy image report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-trivy-image
+          path: reports/trivy-image.sarif
+          retention-days: 30
+
+      - name: Gate — fail job if Trivy found image vulnerabilities
+        if: steps.trivy-image.outcome == 'failure'
+        run: |
+          echo "::error::Trivy found vulnerabilities in the built container image."
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # 6) SBOM — Syft (CycloneDX)
+  # Generates a Software Bill of Materials for the exact image that would
+  # ship. This directly satisfies CRA Annex I, Part II, point (1) — see
+  # CRA_MAPPING.md. SBOM generation never fails the pipeline: an SBOM is an
+  # inventory, not a gate.
+  # ---------------------------------------------------------------------------
+  sbom:
+    name: "06 · SBOM (Syft / CycloneDX)"
+    runs-on: ubuntu-latest
+    needs: build-image
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load image
+        run: docker load -i image.tar
+
+      - name: Create reports directory
+        run: mkdir -p reports
+
+      - name: Generate SBOM with Syft (CycloneDX JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          image: "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          format: cyclonedx-json
+          output-file: reports/sbom.cyclonedx.json
+          upload-artifact: false
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-sbom
+          path: reports/sbom.cyclonedx.json
+          retention-days: 90
+
+  # ---------------------------------------------------------------------------
+  # 7) DAST — OWASP ZAP baseline scan
+  # Runs the actual container and points ZAP's baseline (passive) scan at it,
+  # exercising the running application like a black-box attacker would —
+  # catching issues SAST cannot see (missing security headers, cookie flags,
+  # server fingerprinting, etc.). .zap/rules.tsv tunes noisy/expected alerts.
+  # ---------------------------------------------------------------------------
+  dast-zap:
+    name: "07 · DAST — OWASP ZAP baseline"
+    runs-on: ubuntu-latest
+    needs: build-image
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load image
+        run: docker load -i image.tar
+
+      - name: Start application container
+        run: |
+          docker run -d --name fleet-compliance-api -p 8000:8000 "${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Wait for the application to become healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/health > /dev/null; then
+              echo "Application is up after ${i} attempt(s)."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Application did not become healthy in time."
+          docker logs fleet-compliance-api
+          exit 1
+
+      - name: Create reports directory
+        run: mkdir -p reports
+
+      - name: Run OWASP ZAP baseline scan
+        id: zap
+        uses: zaproxy/action-baseline@v0.12.0
+        continue-on-error: true
+        with:
+          target: "http://localhost:8000"
+          rules_file_name: ".zap/rules.tsv"
+          cmd_options: "-a"
+          fail_action: true
+          artifact_name: "report-zap"
+
+      - name: Show application logs (debugging aid)
+        if: always()
+        run: docker logs fleet-compliance-api
+
+      - name: Gate — fail job if ZAP found blocking findings
+        if: steps.zap.outcome == 'failure'
+        run: |
+          echo "::error::OWASP ZAP found findings against the running application. See docs/VULNERABILITIES.md."
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # 8) Publish a single, consolidated set of reports + a human-readable
+  # summary in the workflow run. Runs even if earlier jobs failed
+  # (`if: always()`) because the whole point of the pipeline is to surface
+  # findings, not to hide them behind a red X.
+  # ---------------------------------------------------------------------------
+  publish-reports:
+    name: "08 · Publish security reports"
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - unit-tests
+      - sast-semgrep
+      - secrets-gitleaks
+      - sca-dependencies
+      - container-scan
+      - sbom
+      - dast-zap
+    steps:
+      - name: Download every report-* artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: all-reports
+          pattern: "report-*"
+
+      - name: Build consolidated run summary
+        run: |
+          {
+            echo "# DevSecOps Pipeline — Security Report Summary"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Triggered by: \`${GITHUB_EVENT_NAME}\`"
+            echo
+            echo "| Stage | Result |"
+            echo "|---|---|"
+            echo "| Unit tests (pytest) | ${{ needs.unit-tests.result }} |"
+            echo "| SAST (Semgrep) | ${{ needs.sast-semgrep.result }} |"
+            echo "| Secrets (Gitleaks) | ${{ needs.secrets-gitleaks.result }} |"
+            echo "| SCA dependencies (Trivy) | ${{ needs.sca-dependencies.result }} |"
+            echo "| Container image scan (Trivy) | ${{ needs.container-scan.result }} |"
+            echo "| SBOM (Syft) | ${{ needs.sbom.result }} |"
+            echo "| DAST (OWASP ZAP) | ${{ needs.dast-zap.result }} |"
+            echo
+            echo "Download the full reports (SARIF / JSON / HTML / CycloneDX SBOM) from the"
+            echo "\`security-reports-${GITHUB_SHA}\` artifact on this run, or from the"
+            echo "**Security -> Code scanning** tab for SAST / secrets / dependency findings."
+          } | tee run-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload consolidated report bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports-${{ github.sha }}
+          path: |
+            all-reports
+            run-summary.md
+          retention-days: 30

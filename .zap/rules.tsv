@@ -1,0 +1,12 @@
+## OWASP ZAP baseline scan rules file.
+## Used by: .github/workflows/devsecops-pipeline.yml, job "07 · DAST — OWASP ZAP baseline"
+## Format: <rule id><TAB><threshold: IGNORE|INFO|WARN|FAIL><TAB>(<rule name — comment only>)
+##
+## We deliberately do NOT ignore missing-security-header findings or cookie
+## flag findings — those are real, actionable findings this API currently
+## has (see docs/VULNERABILITIES.md) and the whole point of this job is to
+## report them. We only mute alerts that are pure informational noise for a
+## JSON API with no browser-rendered frontend.
+
+10109	IGNORE	(Modern Web Application)
+10027	IGNORE	(Information Disclosure - Suspicious Comments)

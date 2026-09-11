@@ -1,0 +1,5 @@
+# Additional dependencies for local development and testing only.
+# These are not shipped in the production container image.
+-r requirements.txt
+pytest==8.0.0
+httpx==0.26.0

@@ -1,0 +1,313 @@
+# Vulnerabilidades intencionadas y cómo corregirlas
+
+Este repositorio incluye **3 vulnerabilidades sencillas, deliberadas y documentadas**
+en la Fleet Compliance API, precisamente para que el pipeline DevSecOps tenga
+algo real que detectar. No son exploits ni malware: son errores comunes y
+didácticos que cualquier equipo comete alguna vez.
+
+**Estado esperado en la primera ejecución del pipeline: en rojo.** Eso es
+intencionado — demuestra que las puertas de seguridad (*security gates*)
+funcionan de verdad. El objetivo de este documento es que apliques cada fix
+en **un commit independiente** (`fix: ...`) y veas el pipeline pasar a verde
+paso a paso. Esa secuencia de commits es en sí misma una pieza de portafolio:
+demuestra que sabes interpretar hallazgos de seguridad y corregirlos, no solo
+generar informes.
+
+---
+
+## Vulnerabilidad 1 — Dependencia desactualizada con CVE conocida
+
+| | |
+|---|---|
+| **Dónde** | `app/requirements.txt` |
+| **Qué** | `PyYAML==5.3.1` |
+| **CVE** | [CVE-2020-14343](https://nvd.nist.gov/vuln/detail/CVE-2020-14343) |
+| **Severidad (NVD)** | Crítica (9.8 CVSS v3) |
+| **Detectada por** | Job `03 · SCA — dependencies (Trivy)` y `05 · Container image scan (Trivy)` |
+| **CWE** | CWE-20 (Improper Input Validation) → permite ejecución de código arbitrario |
+
+### Descripción
+
+PyYAML ≤ 5.3.1 permite ejecución de código arbitrario si se usa
+`yaml.load()`/`yaml.full_load()` con las clases `FullLoader` o `UnsafeLoader`
+sobre una entrada no confiable, porque el deserializador puede reconstruir
+objetos Python arbitrarios (`!!python/object/apply:...`) durante el parseo.
+
+Este proyecto usa `yaml.safe_load()` (ver `app/feature_flags.py`), que **no**
+es vulnerable a este CVE concreto. Es un matiz importante y a propósito: un
+escáner de composición de software (SCA) como Trivy marca la **versión** de
+la librería instalada, no si tu código la usa de forma segura o insegura.
+Eso es correcto — un SBOM y un escaneo de dependencias existen para dar
+visibilidad de *qué* hay en tu cadena de suministro, no para juzgar caso por
+caso si hoy es explotable. Mañana alguien puede añadir un `yaml.load()` sin
+`Loader=SafeLoader` en otro módulo y la vulnerabilidad pasa a ser real de
+inmediato, sin que nadie lo note si no hay SCA en el pipeline.
+
+### Cómo reproducirlo
+
+```bash
+cd app
+pip install -r requirements.txt
+pip show pyyaml   # Version: 5.3.1
+```
+
+### Fix
+
+Actualizar el pin a una versión parcheada (≥ 5.4) y fijar además la última
+estable conocida en el momento de escribir esto:
+
+```diff
+- PyYAML==5.3.1
++ PyYAML==6.0.1
+```
+
+Después:
+
+```bash
+cd app
+pip install -r requirements.txt
+pytest ../  # los tests no dependen de PyYAML, deben seguir en verde
+```
+
+Commit sugerido:
+
+```
+fix(deps): bump PyYAML 5.3.1 -> 6.0.1 (CVE-2020-14343)
+```
+
+---
+
+## Vulnerabilidad 2 — Secretos y credenciales por defecto embebidos en el código
+
+| | |
+|---|---|
+| **Dónde** | `app/config.py` |
+| **Qué** | `SECRET_KEY` (firma de JWT) y `ADMIN_PASSWORD` (credencial de la cuenta operadora sembrada al arrancar) hardcodeados en el fuente |
+| **Detectada por** | Job `02 · Secrets (Gitleaks)` |
+| **CWE** | CWE-798 (Use of Hard-coded Credentials) |
+| **Relación con CRA** | Ver [`CRA_MAPPING.md`](../CRA_MAPPING.md) — Annex I, Parte I, punto 2(b): *"por defecto, entregarse con una configuración segura"* |
+
+### Descripción
+
+Dos problemas relacionados, del mismo origen (gestión de secretos), con
+impacto distinto:
+
+1. **`SECRET_KEY`** firma todos los JWT emitidos por `POST /auth/token`. Al
+   estar en el código fuente (y por tanto en el historial de git si se
+   llega a subir), cualquiera con acceso al repositorio puede **forjar
+   tokens válidos para cualquier usuario**, sin conocer ninguna contraseña.
+2. **`ADMIN_PASSWORD`** es la contraseña de la cuenta operadora sembrada la
+   primera vez que arranca la aplicación. Es una credencial por defecto,
+   igual para todo el mundo que despliegue este software sin cambiarla —
+   justo lo que la CRA llama "secure by default".
+
+Gitleaks detecta el primer caso de forma automática (cadena de alta entropía
+asignada a una variable con nombre `*_KEY`/`*_SECRET*`, patrón `generic-api-key`
+de su ruleset por defecto). El segundo caso (contraseña por defecto débil
+pero de aspecto "normal") normalmente **no** lo detecta un escáner de
+secretos — hace falta revisión humana o una política explícita
+("todo despliegue debe forzar cambio de credencial en el primer login").
+Ese es justamente el aprendizaje: la automatización coge lo obvio, pero el
+threat modeling sigue haciendo falta para lo que no tiene una firma clara.
+
+### Fix
+
+Mover ambos valores a variables de entorno, sin valor por defecto embebido
+para el secreto de firma (que falle explícitamente si no se configura), y
+generar la contraseña inicial de forma aleatoria si no se proporciona:
+
+```diff
+--- a/app/config.py
++++ b/app/config.py
+@@
+ import os
++import secrets
+ 
+-# --- VULNERABLE: a realistic-looking, high-entropy secret hardcoded in source.
+-SECRET_KEY = "Tz8pQ2mXnJ5vLk9wRcYbE3hUiO7sAqDf"
++SECRET_KEY = os.environ["FLEET_SECRET_KEY"]  # no default: fail fast if unset
+ ALGORITHM = "HS256"
+ ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ 
+-ADMIN_USERNAME = "admin"
+-ADMIN_PASSWORD = "Admin123!"
++ADMIN_USERNAME = os.getenv("FLEET_ADMIN_USERNAME", "admin")
++ADMIN_PASSWORD = os.getenv("FLEET_ADMIN_PASSWORD") or secrets.token_urlsafe(16)
++if "FLEET_ADMIN_PASSWORD" not in os.environ:
++    print(f"[startup] No FLEET_ADMIN_PASSWORD set — generated one-time password: {ADMIN_PASSWORD}")
+```
+
+Y en despliegue (local o CI), usar `.env.example` como plantilla:
+
+```bash
+cp .env.example .env
+# editar .env con valores reales
+export $(grep -v '^#' .env | xargs)  # o usa --env-file con docker/docker compose
+```
+
+Genera un secreto fuerte con:
+
+```bash
+openssl rand -hex 32
+```
+
+Commit sugerido (idealmente en dos commits separados, uno por cada
+credencial, para que el historial sea legible):
+
+```
+fix(secrets): load JWT signing key from environment, fail fast if unset
+fix(secrets): remove hardcoded default admin password, generate at first boot
+```
+
+> ⚠️ Si esta vulnerabilidad se hubiera descubierto en un repositorio ya
+> subido a GitHub, cambiar el código **no es suficiente**: el secreto sigue
+> en el historial de git. Habría que rotarlo (invalidar tokens firmados con
+> la clave antigua) y considerar reescribir el historial
+> (`git filter-repo`) o, más realista en la mayoría de casos, aceptar el
+> secreto como comprometido y rotarlo donde se use.
+
+---
+
+## Vulnerabilidad 3 — Inyección SQL
+
+| | |
+|---|---|
+| **Dónde** | `app/database.py`, función `search_devices()` |
+| **Endpoint afectado** | `GET /devices/search?q=...` |
+| **Detectada por** | Job `01 · SAST (Semgrep)` (regla propia `.semgrep/custom-rules.yml` + reglas públicas `p/python`) |
+| **CWE** | CWE-89 (SQL Injection) |
+| **OWASP Top 10 2021** | A03:2021 — Injection |
+
+### Descripción
+
+```python
+sql = (
+    f"SELECT * FROM devices WHERE owner = '{owner}' "
+    f"AND (asset_tag LIKE '%{query}%' OR device_type LIKE '%{query}%')"
+)
+return conn.execute(sql).fetchall()
+```
+
+El parámetro `q` de la query string se concatena directamente en el SQL. Un
+payload como:
+
+```
+GET /devices/search?q=nonexistent' OR '1'='1') --%20
+```
+
+rompe la cláusula `LIKE` prevista, cierra el paréntesis que la envuelve,
+añade una condición siempre verdadera y comenta el resto de la consulta —
+convirtiendo el filtro de búsqueda en un "devuélvemelo todo" (nótese que hay
+que cerrar el paréntesis y comentar con `--` explícitamente: el código
+vulnerable añade un `%'` justo después de `{query}`, así que un payload
+ingenuo `' OR '1'='1` no basta, porque ese `%` final rompe la tautología
+antes de que llegue a evaluarse). Verificado directamente contra `sqlite3`
+al escribir `app/tests/test_vulnerabilities.py`.
+
+Con más esfuerzo, la misma técnica permite exfiltrar datos de **otra
+tabla** con una inyección `UNION SELECT`, por ejemplo para leer los hashes
+de contraseña de `users` (la tabla `devices` tiene 7 columnas, así que la
+`UNION SELECT` debe aportar 7 valores):
+
+```
+GET /devices/search?q=x') UNION SELECT id, username, hashed_password, 'x','x','x','x' FROM users --%20
+```
+
+también verificado directamente contra `sqlite3` (no incluido como test
+automatizado para no acoplar el test a la forma exacta de la tabla, pero
+reproducible copiando la query anterior).
+
+El test `app/tests/test_vulnerabilities.py::test_search_endpoint_is_sql_injectable`
+reproduce el fallo de forma automatizada y sirve de test de regresión una
+vez aplicado el fix.
+
+### Fix
+
+Sustituir la interpolación por una consulta parametrizada:
+
+```diff
+--- a/app/database.py
++++ b/app/database.py
+@@
+     with get_connection() as conn:
+-        sql = (
+-            f"SELECT * FROM devices WHERE owner = '{owner}' "
+-            f"AND (asset_tag LIKE '%{query}%' OR device_type LIKE '%{query}%')"
+-        )  # intentionally NOT parameterized — left in for the SAST job to find
+-        return conn.execute(sql).fetchall()
++        like_pattern = f"%{query}%"
++        sql = (
++            "SELECT * FROM devices WHERE owner = ? "
++            "AND (asset_tag LIKE ? OR device_type LIKE ?)"
++        )
++        return conn.execute(sql, (owner, like_pattern, like_pattern)).fetchall()
+```
+
+Y actualizar el test de regresión para reflejar el comportamiento correcto
+(ya no debe devolver resultados con un payload de inyección):
+
+```diff
+--- a/app/tests/test_vulnerabilities.py
++++ b/app/tests/test_vulnerabilities.py
+@@
+-    tags = [d["asset_tag"] for d in resp.json()]
+-    assert "SENSOR-100" in tags
+-    assert "POS-200" in tags
++    # FIXED behavior: the payload is treated as a literal search string,
++    # matches nothing, and no injection occurs.
++    assert resp.json() == []
+```
+
+Commit sugerido:
+
+```
+fix(security): parameterize search_devices() query to prevent SQL injection
+```
+
+---
+
+## Checklist para tu propia secuencia de commits
+
+1. `fix(deps): bump PyYAML 5.3.1 -> 6.0.1 (CVE-2020-14343)`
+2. `fix(secrets): load JWT signing key from environment, fail fast if unset`
+3. `fix(secrets): remove hardcoded default admin password, generate at first boot`
+4. `fix(security): parameterize search_devices() query to prevent SQL injection`
+
+Después de cada commit, relanza el workflow (`workflow_dispatch` o un push)
+y observa qué job pasa de rojo a verde. Guarda una captura de cada
+transición — son exactamente las capturas "antes/después" que pide el
+README para la sección de resultados.
+
+## Sobre los hallazgos de OWASP ZAP (DAST)
+
+A diferencia de las tres vulnerabilidades anteriores, los hallazgos de ZAP
+(cabeceras de seguridad ausentes: `Content-Security-Policy`,
+`X-Content-Type-Options`, `Strict-Transport-Security`, ...) no se han
+introducido "a propósito" en el sentido de una línea de código concreta:
+son el estado por defecto de cualquier API FastAPI a la que no se le ha
+añadido un middleware de cabeceras. Se documentan aquí porque son un
+ejemplo perfecto de por qué el DAST es complementario al SAST: ningún
+análisis estático del código Python iba a decirte que faltan cabeceras
+HTTP en las respuestas reales.
+
+Fix sugerido (no incluido en el código base a propósito, para que sea el
+último ejercicio del proyecto): añadir un middleware que fije cabeceras de
+seguridad en cada respuesta, por ejemplo con
+[`secure`](https://github.com/TypeError/secure) o manualmente:
+
+```python
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = "default-src 'none'"
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return response
+```
+
+Commit sugerido:
+
+```
+fix(security): add hardening HTTP response headers (OWASP ZAP findings)
+```

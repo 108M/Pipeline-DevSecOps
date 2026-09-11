@@ -1,0 +1,32 @@
+# Custom Semgrep rule(s) for this repository, run alongside the public
+# p/owasp-top-ten, p/python and p/secrets rulesets (see
+# .github/workflows/devsecops-pipeline.yml, job "01 · SAST (Semgrep)").
+#
+# The public rulesets already have generic f-string-in-SQL detectors; this
+# rule is intentionally narrower and codebase-specific, to show how a team
+# would extend Semgrep with knowledge only they have (e.g. "our DB access
+# layer lives in database.py and must never build SQL via string formatting").
+
+rules:
+  - id: fleet-api-fstring-sql-query
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Possible SQL Injection: an f-string / .format() / % is used to build a
+      SQL query string. Use parameterized queries (pass values as a tuple to
+      cursor.execute()) instead of interpolating user input directly into SQL.
+      See docs/VULNERABILITIES.md, Vulnerability 3.
+    metadata:
+      cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+      owasp: "A03:2021 - Injection"
+      references:
+        - https://owasp.org/Top10/A03_2021-Injection/
+    patterns:
+      - pattern-either:
+          - pattern: conn.execute(f"...")
+          - pattern: cur.execute(f"...")
+          - pattern: cursor.execute(f"...")
+          - pattern: |
+              $SQL = f"..."
+              ...
+              $CONN.execute($SQL)
