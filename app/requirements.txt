@@ -1,13 +1,24 @@
 # Runtime dependencies for the Fleet Compliance API.
+#
+# Versions below are refreshed as of 2026-09 based on real findings from the
+# `05 · Container image scan (Trivy)` job — not just "latest at authoring
+# time". fastapi/pydantic/uvicorn were bumped straightforwardly; PyJWT,
+# python-multipart and starlette (a *transitive* fastapi dependency, pinned
+# here directly) each had real HIGH/MEDIUM CVEs with an available fix that
+# Trivy caught after the fact. See docs/VULNERABILITIES.md, Vulnerability 1,
+# for the story of why this matters: pins that were current when written
+# don't stay current — that's exactly what the weekly scheduled pipeline run
+# (see devsecops-pipeline.yml, `schedule:`) exists to keep catching.
 
-fastapi==0.115.6
-uvicorn[standard]==0.32.1
-pydantic==2.10.4
-PyJWT==2.10.1
+fastapi==0.141.1
+starlette==1.6.0
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
+PyJWT==2.13.0
 passlib[bcrypt]==1.7.4
 # passlib 1.7.4 probes bcrypt internals that bcrypt>=4.1 removed/changed
 # (module.__about__, silent >72-byte truncation) — pin the last compatible
 # bcrypt release rather than pulling in passlib's unmaintained bcrypt support.
 bcrypt==4.0.1
-python-multipart==0.0.19
+python-multipart==0.0.32
 PyYAML==6.0.1

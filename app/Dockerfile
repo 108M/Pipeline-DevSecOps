@@ -21,6 +21,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# The pip version bundled in the base image tends to lag behind pip's own
+# published CVEs (caught by the Trivy image scan, same as any other
+# package) — upgrade it before it installs anything else.
+RUN pip install --no-cache-dir --upgrade pip
+
 COPY app/requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
