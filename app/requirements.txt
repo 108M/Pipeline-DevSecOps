@@ -22,3 +22,7 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-multipart==0.0.32
 PyYAML==6.0.1
+# msgpack is a transitive dependency (pulled in by one of uvicorn[standard]'s
+# extras), not something imported directly in this app — pinned explicitly
+# anyway so the resolver can't silently settle on a vulnerable version.
+msgpack==1.2.2

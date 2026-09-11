@@ -21,10 +21,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# The pip version bundled in the base image tends to lag behind pip's own
-# published CVEs (caught by the Trivy image scan, same as any other
-# package) — upgrade it before it installs anything else.
-RUN pip install --no-cache-dir --upgrade pip
+# pip and setuptools (bundled together in the base image) tend to lag
+# behind their own published CVEs (caught by the Trivy image scan, same as
+# any other package) — upgrade both before installing anything else.
+RUN pip install --no-cache-dir --upgrade pip setuptools
 
 COPY app/requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
@@ -33,13 +33,14 @@ RUN pip install --no-cache-dir --user -r requirements.txt
 FROM python:3.12-slim AS runtime
 
 # `FROM python:3.12-slim` here starts a SECOND, independent copy of the base
-# image with its own bundled pip — upgrading pip in the builder stage above
-# does not carry over; only the packages explicitly COPY --from=builder do.
-# (Learned this the hard way: the image scan kept flagging pip CVEs even
-# after "fixing" it, because it was still checking the runtime stage's own
-# untouched pip.) Upgrade it here too, before switching to the non-root user
-# below (writing to system site-packages needs root).
-RUN pip install --no-cache-dir --upgrade pip
+# image with its own bundled pip/setuptools — upgrading them in the builder
+# stage above does not carry over; only the packages explicitly
+# COPY --from=builder do. (Learned this the hard way: the image scan kept
+# flagging pip CVEs even after "fixing" it, because it was still checking
+# the runtime stage's own untouched copy.) Upgrade here too, before
+# switching to the non-root user below (writing to system site-packages
+# needs root).
+RUN pip install --no-cache-dir --upgrade pip setuptools
 
 # Create an unprivileged user to run the application as (never run as root).
 RUN addgroup --system app && adduser --system --ingroup app --home /home/app app
