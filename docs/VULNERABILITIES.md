@@ -232,12 +232,30 @@ fix(secrets): remove hardcoded default admin password, generate at first boot
 > que vive solo durante el escaneo, generar el secreto en el momento es más
 > seguro que gestionar uno persistente.
 
-> ⚠️ Si esta vulnerabilidad se hubiera descubierto en un repositorio ya
-> subido a GitHub, cambiar el código **no es suficiente**: el secreto sigue
-> en el historial de git. Habría que rotarlo (invalidar tokens firmados con
-> la clave antigua) y considerar reescribir el historial
-> (`git filter-repo`) o, más realista en la mayoría de casos, aceptar el
-> secreto como comprometido y rotarlo donde se use.
+> ⚠️ **Esto pasó de verdad en este mismo repositorio, no es solo teoría.**
+> Cambiar el código en `db1f022` **no fue suficiente**: el job `02 ·
+> Secrets (Gitleaks)` siguió en rojo después del fix, porque el secreto
+> original sigue en el historial de git, en el commit `3b544bf` (donde se
+> introdujo a propósito). Con las opciones reales sobre la mesa:
+>
+> 1. **Reescribir el historial** (`git filter-repo` + force-push) — lo más
+>    "limpio" en teoría, pero destructivo y poco realista en cuanto el
+>    repositorio se comparte con alguien más (reescribe SHAs, rompe forks,
+>    PRs abiertos, referencias externas).
+> 2. **Rotar el secreto donde se use** — la respuesta correcta si fuera un
+>    secreto real de un servicio real. Aquí no aplica: nunca fue una
+>    credencial de verdad, no hay nada que rotar.
+> 3. **Allowlist explícito por commit, después del fix, no en su lugar** —
+>    lo que se hizo aquí. `.gitleaks.toml` ignora ese *commit concreto* por
+>    SHA exacto (no por patrón), con un comentario explicando el porqué.
+>    Cualquier secreto nuevo — incluso en esa misma línea de código, en un
+>    commit futuro — se sigue detectando con normalidad.
+>
+> La opción 3 es la que casi siempre se usa en la práctica al encontrar
+> un secreto legacy en un repo compartido: no puedes deshacer que estuvo
+> ahí, pero puedes dejar constancia de que se investigó, se confirmó inerte
+> y se documentó — que es justo lo que exige el Anexo I, Parte II, punto 4
+> de la CRA sobre divulgación de vulnerabilidades corregidas.
 
 ---
 

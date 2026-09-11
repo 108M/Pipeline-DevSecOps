@@ -23,3 +23,18 @@ paths = [
 # NOTE: app/config.py is intentionally NOT allowlisted. SECRET_KEY and
 # ADMIN_PASSWORD in that file are Vulnerability 2 (see
 # docs/VULNERABILITIES.md) and this pipeline is supposed to catch them.
+
+# Historical exception, added AFTER the fix, not instead of it:
+# commit 3b544bf5c343067ef9cca5e113704021f12207c9 is the original commit
+# that introduced Vulnerability 2 on purpose. The hardcoded secret was
+# fixed in app/config.py in commit db1f022 (see docs/VULNERABILITIES.md,
+# Vulnerability 2), but the old value still lives in this one historical
+# commit — git history is immutable without a force-pushed rewrite, which
+# this project deliberately avoids for an already-shared repo. This value
+# was never a real credential for any real service, so rotation is a
+# no-op; it is allowlisted here by exact commit, not by pattern, so a
+# genuinely new secret anywhere else (including a *different* line in this
+# same file in the future) still gets caught normally.
+commits = [
+  "3b544bf5c343067ef9cca5e113704021f12207c9",
+]
