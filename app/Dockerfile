@@ -32,15 +32,19 @@ RUN pip install --no-cache-dir --user -r requirements.txt
 # ---- runtime stage ------------------------------------------------------
 FROM python:3.12-slim AS runtime
 
-# `FROM python:3.12-slim` here starts a SECOND, independent copy of the base
-# image with its own bundled pip/setuptools — upgrading them in the builder
-# stage above does not carry over; only the packages explicitly
-# COPY --from=builder do. (Learned this the hard way: the image scan kept
-# flagging pip CVEs even after "fixing" it, because it was still checking
-# the runtime stage's own untouched copy.) Upgrade here too, before
-# switching to the non-root user below (writing to system site-packages
-# needs root).
-RUN pip install --no-cache-dir --upgrade pip setuptools
+# This image never installs anything at runtime — every package it needs is
+# copied over, pre-built, from the builder stage below. pip/setuptools/wheel
+# have no job to do here at all, so remove them outright instead of trying
+# to keep them patched. (This replaced an earlier attempt that just upgraded
+# them: Trivy kept reporting an old msgpack/setuptools version no upgrade
+# ever changed — almost certainly pip's own internally-bundled copies, not
+# anything from requirements.txt. Removing pip removes that whole category
+# of findings instead of chasing it version by version.) Order matters:
+# uninstall pip's dependents first, pip itself last, in the same command
+# `pip` is still around to run it — this is the standard safe pattern for
+# self-uninstalling pip from a container.
+RUN python -m pip uninstall --yes wheel setuptools \
+    && python -m pip uninstall --yes pip
 
 # Create an unprivileged user to run the application as (never run as root).
 RUN addgroup --system app && adduser --system --ingroup app --home /home/app app
