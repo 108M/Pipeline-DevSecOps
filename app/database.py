@@ -158,20 +158,19 @@ def delete_device(device_id: int, owner: str) -> bool:
 
 def search_devices(query: str, owner: str) -> list[sqlite3.Row]:
     """
-    VULNERABILITY 3 — SQL Injection (intentional, for educational purposes).
-    See docs/VULNERABILITIES.md, "Vulnerability 3", for the full write-up,
-    the tool that catches it (Semgrep) and the exact fix.
+    Fixed version of Vulnerability 3 (SQL Injection) — see
+    docs/VULNERABILITIES.md, "Vulnerability 3", for the original vulnerable
+    code, the CWE/OWASP reference, and how Semgrep caught it.
 
-    `query` is interpolated directly into the SQL string instead of being
-    passed as a bound parameter. A request like:
-        GET /devices/search?q=' OR '1'='1
-    returns every device regardless of owner, and a crafted payload using
-    UNION SELECT could exfiltrate data from the `users` table (including
-    password hashes).
+    `query` is now passed as a bound parameter instead of being
+    interpolated into the SQL string, so a payload like
+    `nonexistent' OR '1'='1') -- ` is treated as a literal search string
+    and matches nothing.
     """
     with get_connection() as conn:
+        like_pattern = f"%{query}%"
         sql = (
-            f"SELECT * FROM devices WHERE owner = '{owner}' "
-            f"AND (asset_tag LIKE '%{query}%' OR device_type LIKE '%{query}%')"
-        )  # intentionally NOT parameterized — left in for the SAST job to find
-        return conn.execute(sql).fetchall()
+            "SELECT * FROM devices WHERE owner = ? "
+            "AND (asset_tag LIKE ? OR device_type LIKE ?)"
+        )
+        return conn.execute(sql, (owner, like_pattern, like_pattern)).fetchall()

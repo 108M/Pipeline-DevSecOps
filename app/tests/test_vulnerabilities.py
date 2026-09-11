@@ -1,33 +1,24 @@
 """
 Security regression tests for the vulnerabilities documented in
-docs/VULNERABILITIES.md.
-
-These tests exist to make the vulnerable behavior *observable* and
-reproducible, not just theoretical — and to double as regression tests
-once each vulnerability is fixed in its own commit (see
-docs/VULNERABILITIES.md for the expected fix and how this test should
-change afterwards).
+docs/VULNERABILITIES.md. Both vulnerabilities covered here (SQL injection
+and hardcoded secrets) have already been fixed in this codebase — these
+tests exist to prove the fixed behavior stays fixed, not to demonstrate
+the original vulnerable behavior (see docs/VULNERABILITIES.md for that;
+it also documents the original code, the CWE, and how each was found).
 """
 
 
-def test_search_endpoint_is_sql_injectable(client, auth_headers):
+def test_search_endpoint_is_not_sql_injectable(client, auth_headers):
     """
-    Vulnerability 3 (SQL Injection): a payload that closes the quoted LIKE
-    pattern, re-closes the surrounding parenthesis, injects an always-true
-    condition, and comments out the rest of the query should return every
-    device regardless of the intended `asset_tag`/`device_type` filter —
-    proving the query is not parameterized.
+    Vulnerability 3 (SQL Injection) — FIXED. Regression test.
 
-    The payload has to account for the trailing `%'` the vulnerable code
-    appends after `{query}` (see database.py::search_devices) — a naive
-    `' OR '1'='1` payload actually lands as the comparison `'1'='1%'`
-    (false) once that trailing `%` is appended, and does NOT bypass the
-    filter. Closing the parenthesis and starting a `--` comment sidesteps
-    that entirely; verified directly against sqlite3 while writing this test.
-
-    After the fix (parameterized query), this same payload must be treated
-    as a literal search string and return zero results — flip the
-    assertion below when you apply the fix.
+    This exact payload used to close the quoted LIKE pattern, re-close the
+    surrounding parenthesis, inject an always-true condition, and comment
+    out the rest of the query — bypassing the intended filter entirely
+    (verified against sqlite3 directly while the vulnerability was still
+    present; see docs/VULNERABILITIES.md, "Vulnerability 3"). Now that
+    `search_devices()` uses a parameterized query, the same string is
+    treated as a literal search term and matches nothing.
     """
     client.post(
         "/devices",
@@ -46,20 +37,24 @@ def test_search_endpoint_is_sql_injectable(client, auth_headers):
     )
     assert resp.status_code == 200
 
-    # VULNERABLE behavior today: the injected OR '1'='1' bypasses the
-    # intended filter and returns every device, even though no device's
-    # asset_tag/device_type actually contains the literal "nonexistent".
-    tags = [d["asset_tag"] for d in resp.json()]
-    assert "SENSOR-100" in tags
-    assert "POS-200" in tags
+    # FIXED behavior: the payload is treated as a literal search string,
+    # matches nothing, and no injection occurs.
+    assert resp.json() == []
 
 
-def test_admin_default_credentials_work_out_of_the_box(client):
+def test_seeded_admin_account_logs_in_with_configured_credential(client):
     """
-    Vulnerability 2 (hardcoded/insecure defaults): the seeded operator
-    account uses a hardcoded, never-forced-to-rotate password. This test
-    documents that the product is NOT secure-by-default (CRA Annex I,
-    Part I, 2(b)) until an operator explicitly changes the credential.
+    Vulnerability 2 (hardcoded secrets/insecure defaults) — FIXED.
+
+    `config.SECRET_KEY` now comes from the required `FLEET_SECRET_KEY` env
+    var (see conftest.py, which sets a test-only value before import — the
+    app itself has no hardcoded fallback and fails fast without one).
+    `config.ADMIN_PASSWORD` is either an operator-provided
+    `FLEET_ADMIN_PASSWORD` or a randomly generated one-time password — never
+    a fixed, guessable value. This test doesn't assert a specific password;
+    it asserts that whatever credential the app actually ended up with at
+    startup is the one that logs in, proving the seeded account and the JWT
+    signing flow both still work end-to-end after the fix.
     """
     from app import config
 
