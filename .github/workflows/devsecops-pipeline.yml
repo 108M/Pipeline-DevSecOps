@@ -446,9 +446,28 @@ jobs:
       - name: Load image
         run: docker load -i image.tar
 
+      - name: Generate ephemeral secrets for this run
+        # app.config requires FLEET_SECRET_KEY with no default (see
+        # docs/VULNERABILITIES.md, Vulnerability 2 — the whole point of
+        # that fix is that no fixed value lives in source control or in
+        # this workflow). Generate a fresh, run-scoped secret and admin
+        # password instead — they only need to be consistent between the
+        # container we start below and the login step right after it.
+        id: secrets
+        run: |
+          SECRET_KEY=$(openssl rand -hex 32)
+          ADMIN_PASSWORD=$(openssl rand -base64 24)
+          echo "::add-mask::${SECRET_KEY}"
+          echo "::add-mask::${ADMIN_PASSWORD}"
+          echo "secret_key=${SECRET_KEY}" >> "$GITHUB_OUTPUT"
+          echo "admin_password=${ADMIN_PASSWORD}" >> "$GITHUB_OUTPUT"
+
       - name: Start application container
         run: |
-          docker run -d --name fleet-compliance-api -p 8000:8000 "${IMAGE_NAME}:${IMAGE_TAG}"
+          docker run -d --name fleet-compliance-api -p 8000:8000 \
+            -e FLEET_SECRET_KEY="${{ steps.secrets.outputs.secret_key }}" \
+            -e FLEET_ADMIN_PASSWORD="${{ steps.secrets.outputs.admin_password }}" \
+            "${IMAGE_NAME}:${IMAGE_TAG}"
 
       - name: Wait for the application to become healthy
         run: |
@@ -466,13 +485,8 @@ jobs:
       - name: Obtain an auth token so ZAP can reach protected endpoints too
         id: auth
         run: |
-          # Uses the seeded demo credential (see docs/VULNERABILITIES.md,
-          # Vulnerability 2 — this is the intentionally-hardcoded default
-          # admin password). Once that vulnerability is fixed and the
-          # password stops being a fixed, known value, this step must
-          # instead read it from a GitHub Actions secret.
           TOKEN=$(curl -s -X POST http://localhost:8000/auth/token \
-            -d "username=admin&password=Admin123!" \
+            -d "username=admin&password=${{ steps.secrets.outputs.admin_password }}" \
             -H "Content-Type: application/x-www-form-urlencoded" \
             | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
           echo "::add-mask::${TOKEN}"

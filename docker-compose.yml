@@ -12,8 +12,16 @@ services:
     image: fleet-compliance-api:local
     ports:
       - "8000:8000"
+    environment:
+      # Compose reads a .env file in this directory for variable
+      # substitution automatically — copy .env.example to .env first
+      # (see docs/VULNERABILITIES.md, Vulnerability 2). This intentionally
+      # fails fast with a clear message if you haven't.
+      FLEET_SECRET_KEY: ${FLEET_SECRET_KEY:?Set FLEET_SECRET_KEY — copy .env.example to .env first}
+      FLEET_ADMIN_USERNAME: ${FLEET_ADMIN_USERNAME:-admin}
+      FLEET_ADMIN_PASSWORD: ${FLEET_ADMIN_PASSWORD:-}
     volumes:
-      - tasks-data:/home/app/data
+      - fleet-data:/home/app/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -21,4 +29,4 @@ services:
       retries: 5
 
 volumes:
-  tasks-data:
+  fleet-data:

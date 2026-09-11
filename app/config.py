@@ -1,31 +1,31 @@
 """
 Application configuration.
 
-VULNERABILITY 2 — Hardcoded / mismanaged secrets (intentional, for educational
-purposes). See docs/VULNERABILITIES.md for the full write-up, the tool that
-catches it (Gitleaks) and the exact fix.
+Fixed version of Vulnerability 2 (hardcoded/mismanaged secrets) — see
+docs/VULNERABILITIES.md, "Vulnerability 2", for the original hardcoded
+values, the CWE reference, and how Gitleaks caught them.
 
-In a real project these values MUST come from environment variables injected
-at deploy time (GitHub Actions secrets, Docker secrets, a vault, ...) and
-never be committed to version control. They are hardcoded here on purpose so
-the secret-scanning job in the pipeline has something real to detect.
+The JWT signing key now comes from the environment with no default (the app
+fails fast at startup if it's unset, rather than silently signing tokens
+with a value baked into source control). The admin password comes from the
+environment too; if it's not provided, a random one-time password is
+generated at startup instead of shipping a fixed, guessable default.
 """
 
 import os
+import secrets
 from pathlib import Path
 
-# --- VULNERABLE: a realistic-looking, high-entropy secret hardcoded in source.
-# This is exactly the pattern Gitleaks' "generic-api-key" rule is built to catch.
-SECRET_KEY = "Tz8pQ2mXnJ5vLk9wRcYbE3hUiO7sAqDf"  # noqa: S105 -- intentional, see docs/VULNERABILITIES.md
+SECRET_KEY = os.environ["FLEET_SECRET_KEY"]  # no default: fail fast if unset
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# --- VULNERABLE: insecure default credentials shipped in the codebase.
-# Beyond being a hardcoded secret, this also violates the CRA "secure by
-# default" expectation (Annex I, Part I, point 2(b)) because the product
-# ships with a guessable, unchanged administrator credential.
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "Admin123!"  # noqa: S105 -- intentional, see docs/VULNERABILITIES.md
+ADMIN_USERNAME = os.getenv("FLEET_ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("FLEET_ADMIN_PASSWORD") or secrets.token_urlsafe(16)
+if "FLEET_ADMIN_PASSWORD" not in os.environ:
+    print(
+        f"[startup] No FLEET_ADMIN_PASSWORD set — generated one-time password: {ADMIN_PASSWORD}"
+    )
 
 # --- Non-sensitive configuration (fine to keep as plain variables/env with defaults)
 DB_PATH = os.getenv("FLEET_DB_PATH", "fleet.db")

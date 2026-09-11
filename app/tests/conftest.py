@@ -4,6 +4,12 @@ from pathlib import Path
 
 import pytest
 
+# app.config requires FLEET_SECRET_KEY to be set (see docs/VULNERABILITIES.md,
+# Vulnerability 2 — no hardcoded default on purpose). Set a fixed, obviously
+# fake test-only value *before* anything imports app.config, so test runs
+# don't depend on a real secret and JWTs stay verifiable within a single run.
+os.environ.setdefault("FLEET_SECRET_KEY", "test-only-secret-key-not-for-production")
+
 
 @pytest.fixture()
 def client():

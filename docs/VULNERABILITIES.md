@@ -75,6 +75,66 @@ Commit sugerido:
 fix(deps): bump PyYAML 5.3.1 -> 6.0.1 (CVE-2020-14343)
 ```
 
+### Lo que pasó de verdad al aplicarlo (la parte que no sale en los tutoriales)
+
+Subir el pin de PyYAML fue un único commit. Pero el job `05 · Container
+image scan (Trivy)` — que analiza la imagen final, no solo el código
+fuente — siguió en rojo varios commits más después de eso, por motivos que
+no tenían nada que ver con PyYAML. Se documentan aquí porque son exactamente
+el tipo de fricción real que un pipeline de este tipo saca a la luz, y que
+un caso de laboratorio "limpio" nunca enseña:
+
+1. **Otras dependencias también estaban desactualizadas de verdad.**
+   El propio escaneo de imagen encontró CVEs con parche disponible en
+   `PyJWT`, `python-multipart` y `starlette` (dependencia transitiva de
+   FastAPI) — ninguna de las tres era la "vulnerabilidad intencionada", eran
+   simplemente pines que habían quedado desactualizados entre que se escribió
+   el código y que se ejecutó el pipeline por primera vez. Se corrigieron
+   subiendo cada una a su última versión estable real (comprobada contra
+   PyPI, no de memoria).
+2. **`pip` también tenía CVEs con parche disponible** — y arreglarlo reveló
+   un fallo de diseño del propio `Dockerfile`: el build es multi-stage
+   (`builder` + `runtime`), y cada `FROM python:3.12-slim` arranca una copia
+   **independiente** de la imagen base con su propio `pip` de fábrica.
+   Actualizar `pip` en el stage `builder` no tiene ningún efecto en el stage
+   `runtime`, que es el que realmente se escanea y se despliega — hubo que
+   actualizarlo en los dos sitios por separado.
+3. **Un filtro de severidad demasiado amplio hace que el job nunca pueda
+   ponerse verde.** La imagen base (`python:3.12-slim`, Debian) trae de
+   fábrica decenas de CVEs en paquetes del sistema operativo (`perl-base`,
+   `bash`, `coreutils`...) que **todavía no tienen parche publicado**. Con
+   el filtro original (`CRITICAL,HIGH,MEDIUM` sin más) el job jamás iba a
+   pasar, sin importar qué se arreglara en el código — se añadió
+   `ignore-unfixed: true` para bloquear solo por lo que sí se puede
+   arreglar hoy.
+4. **Un "false lead" real: la SBOM de Docker Buildx.** Trivy avisaba con
+   `Third-party SBOM may lead to inaccurate vulnerability detection` — Docker
+   moderno adjunta automáticamente una attestation de procedencia/SBOM a la
+   imagen durante el build, y en teoría eso puede hacer que Trivy prefiera
+   esa SBOM en vez de analizar el sistema de ficheros real. Se probó a
+   desactivarlo (`docker build --provenance=false --sbom=false`) — no
+   cambió nada, así que no era la causa real, pero se dejó el flag puesto
+   porque sigue siendo una buena práctica independiente de este problema.
+5. **La causa real de un hallazgo persistente (`msgpack`, `setuptools`
+   siempre en la misma versión, pasara lo que pasara).** Ningún cambio en
+   `requirements.txt` ni ninguna actualización de `pip`/`setuptools`
+   cambiaba nunca la versión que Trivy reportaba — la misma, exacta,
+   commit tras commit, aunque los logs de build probaban que la instalación
+   real había ido bien. La explicación más plausible: `pip` lleva sus
+   propias dependencias empaquetadas internamente para su propio uso
+   interno, independientes de lo que el proyecto instala. La solución no
+   fue seguir persiguiendo versiones — fue darse cuenta de que **la imagen
+   final no necesita `pip` para nada** (todo lo que se ejecuta en runtime ya
+   viene pre-instalado desde el stage de build) y eliminarlo del todo del
+   stage `runtime`. Elimina la categoría de hallazgo entera en vez de
+   perseguirla número a número.
+
+Ninguno de estos cinco pasos estaba planeado — cada uno salió de leer el log
+o la SARIF real de una ejecución fallida, no de anticipar el problema de
+antemano. Esa es, honestamente, la mecánica real de resolver hallazgos de un
+pipeline de seguridad: iterar contra evidencia real, no contra lo que "se
+supone" que debería pasar.
+
 ---
 
 ## Vulnerabilidad 2 — Secretos y credenciales por defecto embebidos en el código
@@ -124,7 +184,7 @@ generar la contraseña inicial de forma aleatoria si no se proporciona:
 +import secrets
  
 -# --- VULNERABLE: a realistic-looking, high-entropy secret hardcoded in source.
--SECRET_KEY = "Tz8pQ2mXnJ5vLk9wRcYbE3hUiO7sAqDf"
+-SECRET_KEY = "<redacted-high-entropy-string>"  # the real value is in the git history, not repeated here
 +SECRET_KEY = os.environ["FLEET_SECRET_KEY"]  # no default: fail fast if unset
  ALGORITHM = "HS256"
  ACCESS_TOKEN_EXPIRE_MINUTES = 30
@@ -159,15 +219,18 @@ fix(secrets): load JWT signing key from environment, fail fast if unset
 fix(secrets): remove hardcoded default admin password, generate at first boot
 ```
 
-> 🔗 **Efecto colateral a no olvidar:** el job `07 · DAST` del workflow
-> obtiene un token JWT para que ZAP pueda probar endpoints protegidos, y lo
-> hace haciendo login con el usuario/contraseña sembrados
-> (`admin` / `Admin123!`, ver `.github/workflows/devsecops-pipeline.yml`,
-> paso "Obtain an auth token so ZAP can reach protected endpoints too").
-> En cuanto apliques este fix, esa contraseña deja de ser fija y ese paso
-> del workflow se romperá. Tendrás que crear un secret de repositorio
-> (p. ej. `FLEET_ADMIN_PASSWORD`) y pasarlo al job como variable de entorno
-> en el `docker run` que arranca el contenedor.
+> 🔗 **Efecto colateral que este fix ya resuelve:** el job `07 · DAST`
+> arranca el contenedor de verdad (`docker run`) para que ZAP lo ataque, y
+> `app/config.py` ahora exige `FLEET_SECRET_KEY` sin valor por defecto —
+> así que el contenedor ya no arrancaría sin él. El workflow ya incluye un
+> paso ("Generate ephemeral secrets for this run") que genera un
+> `FLEET_SECRET_KEY` y un `FLEET_ADMIN_PASSWORD` aleatorios **solo para esa
+> ejecución**, los pasa al `docker run` con `-e`, y usa el mismo
+> `FLEET_ADMIN_PASSWORD` en el login que hace ZAP justo después — sin
+> necesidad de crear ningún secret de repositorio ni de fijar ninguna
+> contraseña real en el YAML. Es intencionado: para un contenedor efímero
+> que vive solo durante el escaneo, generar el secreto en el momento es más
+> seguro que gestionar uno persistente.
 
 > ⚠️ Si esta vulnerabilidad se hubiera descubierto en un repositorio ya
 > subido a GitHub, cambiar el código **no es suficiente**: el secreto sigue
