@@ -223,7 +223,7 @@ jobs:
 
       - name: Run Trivy filesystem scan
         id: trivy-fs
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         with:
           scan-type: fs
@@ -314,7 +314,7 @@ jobs:
 
       - name: Run Trivy image scan
         id: trivy-image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         with:
           scan-type: image
@@ -431,7 +431,7 @@ jobs:
 
       - name: Run OWASP ZAP baseline scan
         id: zap
-        uses: zaproxy/action-baseline@v0.12.0
+        uses: zaproxy/action-baseline@v0.15.0
         continue-on-error: true
         with:
           target: "http://localhost:8000"

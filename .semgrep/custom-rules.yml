@@ -6,27 +6,45 @@
 # rule is intentionally narrower and codebase-specific, to show how a team
 # would extend Semgrep with knowledge only they have (e.g. "our DB access
 # layer lives in database.py and must never build SQL via string formatting").
-
+#
+# NOTE on how this rule is written: an earlier version used a plain
+# `pattern-either` with `$SQL = f"..."` followed by `$CONN.execute($SQL)`.
+# That silently matched nothing — verified locally with `semgrep -e` against
+# isolated snippets — because database.py builds the query as TWO adjacent
+# f-string literals inside parentheses:
+#
+#     sql = (
+#         f"SELECT ... '{owner}' "
+#         f"AND ... '%{query}%'"
+#     )
+#
+# Semgrep's `f"..."` ellipsis only matches a single f-string literal node,
+# not an implicit multi-literal concatenation. Taint mode below sidesteps
+# that entirely: it tracks *any* f-string as a source and flags it if it
+# reaches `.execute()` as a sink, regardless of how many literals were
+# concatenated along the way, or how many variables it passed through.
 rules:
   - id: fleet-api-fstring-sql-query
     languages: [python]
     severity: ERROR
+    mode: taint
     message: >-
-      Possible SQL Injection: an f-string / .format() / % is used to build a
-      SQL query string. Use parameterized queries (pass values as a tuple to
-      cursor.execute()) instead of interpolating user input directly into SQL.
+      Possible SQL Injection: an f-string (built from one or more
+      concatenated f-string literals) flows into a .execute() call. Use a
+      parameterized query (pass values as a tuple to cursor.execute())
+      instead of interpolating input directly into SQL.
       See docs/VULNERABILITIES.md, Vulnerability 3.
     metadata:
       cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
       owasp: "A03:2021 - Injection"
       references:
         - https://owasp.org/Top10/A03_2021-Injection/
-    patterns:
-      - pattern-either:
-          - pattern: conn.execute(f"...")
-          - pattern: cur.execute(f"...")
-          - pattern: cursor.execute(f"...")
-          - pattern: |
-              $SQL = f"..."
-              ...
-              $CONN.execute($SQL)
+        - https://semgrep.dev/docs/writing-rules/data-flow/data-flow-overview/
+    pattern-sources:
+      - pattern: f"..."
+    pattern-sinks:
+      - pattern: $CONN.execute(...)
+    pattern-sanitizers:
+      # Parameterized calls (a bound-parameters tuple/list as the 2nd arg)
+      # are exactly the fix in docs/VULNERABILITIES.md — never flag those.
+      - pattern: $CONN.execute($QUERY, $PARAMS)
