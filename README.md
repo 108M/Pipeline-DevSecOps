@@ -24,7 +24,7 @@ contra los requisitos de la **Cyber Resilience Act (CRA)** de la UE
 - [Diagrama del pipeline](#diagrama-del-pipeline)
 - [Vulnerabilidades intencionadas](#vulnerabilidades-intencionadas)
 - [Cómo reproducirlo](#cómo-reproducirlo)
-- [Capturas esperadas](#capturas-esperadas)
+- [Capturas del pipeline en ejecución](#capturas-del-pipeline-en-ejecución)
 - [Estructura del repositorio](#estructura-del-repositorio)
 - [Alineación con la CRA](#alineación-con-la-cra)
 - [Qué añadiría con más tiempo](#qué-añadiría-con-más-tiempo)
@@ -217,14 +217,46 @@ docker compose up --build
 > el runner — ya lo está por defecto en los runners `ubuntu-latest` alojados
 > por GitHub, no hace falta configuración adicional.
 
-## Capturas esperadas
+## Capturas del pipeline en ejecución
 
-Este repositorio se ha construido y documentado sin ejecutarlo todavía en
-GitHub Actions (sin hacer push). La carpeta [`docs/screenshots/`](docs/screenshots/)
-está preparada con la lista exacta de capturas a añadir tras la primera
-ejecución real — pipeline en rojo, pipeline en verde tras los fixes, la
-pestaña Security, los artifacts y el SBOM generado. Es el único paso manual
-que queda para dejar el repositorio 100% completo de cara a un revisor.
+Todas las capturas de abajo son de ejecuciones reales de este pipeline en
+GitHub Actions, no montajes — ver [`docs/screenshots/`](docs/screenshots/)
+para el detalle de qué muestra cada una.
+
+**1. Primera ejecución, en rojo** — los jobs `01` (SAST), `02` (Secrets) y
+`03` (SCA) fallan por las 3 vulnerabilidades intencionadas descritas en
+[`docs/VULNERABILITIES.md`](docs/VULNERABILITIES.md); `05` y `07` fallan en
+cascada porque dependen de una imagen construida sobre el mismo código.
+
+![Pipeline en rojo](docs/screenshots/01-pipeline-red.png)
+
+**2. Tras aplicar los 4 fixes, en verde** — los 9 jobs pasan, incluido el
+último, `07 · DAST — OWASP ZAP`, cerrado con el middleware de cabeceras de
+seguridad de este mismo commit.
+
+![Pipeline en verde](docs/screenshots/02-pipeline-green.png)
+
+**3. Pestaña Security → Code scanning** — las alertas SARIF de Semgrep,
+Gitleaks y Trivy, agregadas automáticamente por GitHub a partir de los
+mismos reportes que sube el job `08`.
+
+![Pestaña de Security](docs/screenshots/03-security-tab.png)
+
+**4. Artifacts de una ejecución** — los reportes individuales por
+herramienta más el SBOM y el paquete consolidado `security-reports-<sha>`.
+
+![Artifacts de la ejecución](docs/screenshots/04-artifacts.png)
+
+**5. SBOM generado (CycloneDX)** — fragmento mostrando `pyyaml@5.3.1`, la
+dependencia desactualizada de la Vulnerabilidad 1, con su CPE/PURL.
+
+![Fragmento del SBOM](docs/screenshots/05-sbom-preview.png)
+
+**6. Informe HTML de OWASP ZAP** — de la ejecución *antes* del fix de
+cabeceras, mostrando los dos hallazgos reales (`Cross-Origin-Resource-Policy`
+y `X-Content-Type-Options`) que motivaron el middleware añadido después.
+
+![Informe de OWASP ZAP](docs/screenshots/06-zap-report.png)
 
 ## Estructura del repositorio
 
