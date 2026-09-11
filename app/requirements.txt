@@ -1,9 +1,4 @@
 # Runtime dependencies for the Fleet Compliance API.
-#
-# VULNERABILITY 1 (intentional): PyYAML is pinned to an old release with a
-# known, published CVE. See docs/VULNERABILITIES.md, "Vulnerability 1", for
-# the CVE id, severity, the tool that catches it (Trivy) and the exact fix
-# (bump the pin). Every other dependency below is kept reasonably current.
 
 fastapi==0.115.6
 uvicorn[standard]==0.32.1
@@ -15,10 +10,4 @@ passlib[bcrypt]==1.7.4
 # bcrypt release rather than pulling in passlib's unmaintained bcrypt support.
 bcrypt==4.0.1
 python-multipart==0.0.19
-
-# --- VULNERABLE: PyYAML 5.3.1 is affected by CVE-2020-14343 (arbitrary code
-# execution via crafted YAML input when using the FullLoader/UnsafeLoader).
-# This app only ever calls yaml.safe_load(), so it is not exploitable through
-# this codebase today — but SCA tooling correctly flags the *version* as
-# vulnerable, which is the point of the exercise. See docs/VULNERABILITIES.md.
-PyYAML==5.3.1
+PyYAML==6.0.1
